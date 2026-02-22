@@ -9,9 +9,7 @@ import re
 
 import filetype
 import requests
-from config import BYPASS_CLOUDFLARE
 from engine.base import BaseDownloader
-from utils.http_client import get_http_client
 
 
 class InstagramDownload(BaseDownloader):
@@ -46,8 +44,7 @@ class InstagramDownload(BaseDownloader):
 
     def _download(self, formats=None):
         try:
-            client = get_http_client(bypass_enabled=BYPASS_CLOUDFLARE)
-            resp = client.get(f"http://instagram:15000/?url={self._url}").json()
+            resp = requests.get(f"http://instagram:15000/?url={self._url}").json()
         except Exception as e:
             self._bot_msg.edit_text(f"Download failed!❌\n\n`{e}`")
             pass
@@ -72,7 +69,7 @@ class InstagramDownload(BaseDownloader):
                     continue
 
                 try:
-                    req = client.get(link, stream=True)
+                    req = requests.get(link, stream=True)
                     length = int(req.headers.get("content-length", 0) or req.headers.get("x-full-image-content-length", 0))
                     filename = f"Instagram_{code}-{counter}"
                     save_path = pathlib.Path(self._tempdir.name, filename)
