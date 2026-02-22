@@ -2,7 +2,7 @@
 # coding: utf-8
 
 # ytdlbot - http_client.py
-# HTTP client with Cloudflare bypass support
+# HTTP client with Cloudflare bypass support using ai-cloudscraper
 
 __author__ = "yeshua-aguilar"
 

@@ -2,19 +2,19 @@
 # coding: utf-8
 
 # ytdlbot - test_cloudflare_bypass.py
-# Test script for Cloudflare bypass functionality
+# Test script for Cloudflare bypass functionality using ai-cloudscraper
 
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.http_client import BypassHTTPClient, get_realistic_headers
 
 
 def test_cloudflare_bypass():
     print("=" * 50)
-    print("Testing Cloudflare Bypass")
+    print("Testing Cloudflare Bypass (ai-cloudscraper)")
     print("=" * 50)
     
     test_sites = [
@@ -56,6 +56,30 @@ def test_headers():
     print("\nResult: OK")
 
 
+def test_direct_download_usage():
+    print("\n" + "=" * 50)
+    print("Testing DirectDownload Usage Pattern")
+    print("=" * 50)
+    
+    from utils.http_client import get_http_client
+    
+    client = get_http_client(bypass_enabled=True)
+    
+    print("\nTesting single instance pattern:")
+    print(f"Client type: {type(client).__name__}")
+    
+    try:
+        resp = client.get("https://httpbin.org/headers", timeout=5)
+        print(f"Status: {resp.status_code}")
+        print("Result: OK")
+    except Exception as e:
+        print(f"Error: {e}")
+        print("Result: FAILED")
+    
+    print("\n" + "=" * 50)
+
+
 if __name__ == "__main__":
     test_cloudflare_bypass()
     test_headers()
+    test_direct_download_usage()
