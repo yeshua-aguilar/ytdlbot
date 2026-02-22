@@ -9,10 +9,11 @@ from pathlib import Path
 
 import yt_dlp
 
-from config import AUDIO_FORMAT
+from config import AUDIO_FORMAT, BYPASS_CLOUDFLARE
 from utils import is_youtube
 from database.model import get_format_settings, get_quality_settings
 from engine.base import BaseDownloader
+from utils.http_client import get_realistic_headers
 
 
 def match_filter(info_dict):
@@ -103,6 +104,7 @@ class YoutubeDownload(BaseDownloader):
             "embed_metadata": True,
             "embed_thumbnail": True,
             "writethumbnail": False,
+            "http_headers": get_realistic_headers(),
         }
         # setup cookies for youtube only
         if is_youtube(self._url):

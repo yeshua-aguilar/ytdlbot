@@ -15,8 +15,9 @@ from uuid import uuid4
 import filetype
 import requests
 
-from config import ENABLE_ARIA2, TMPFILE_PATH
+from config import BYPASS_CLOUDFLARE, ENABLE_ARIA2, TMPFILE_PATH
 from engine.base import BaseDownloader
+from utils.http_client import get_http_client
 
 
 class DirectDownload(BaseDownloader):
@@ -40,7 +41,8 @@ class DirectDownload(BaseDownloader):
 
     def _requests_download(self):
         logging.info("Requests download with url %s", self._url)
-        response = requests.get(self._url, stream=True)
+        client = get_http_client(bypass_enabled=BYPASS_CLOUDFLARE)
+        response = client.get(self._url, stream=True)
         response.raise_for_status()
         file = Path(self._tempdir.name).joinpath(uuid4().hex)
         with open(file, "wb") as f:
