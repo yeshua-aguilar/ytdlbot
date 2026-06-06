@@ -13,6 +13,7 @@ from config import AUDIO_FORMAT
 from utils import is_youtube
 from database.model import get_format_settings, get_quality_settings
 from engine.base import BaseDownloader
+from engine.helper import convert_audio_format
 
 
 def match_filter(info_dict):
@@ -39,9 +40,9 @@ class YoutubeDownload(BaseDownloader):
         formats = []
         defaults = [
             # webm , vp9 and av01 are not streamable on telegram, so we'll extract only mp4
-            "bestvideo[ext=mp4][vcodec!*=av01][vcodec!*=vp09]+bestaudio[ext=m4a]/bestvideo+bestaudio",
-            "bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/best[vcodec^=avc]/best",
-            None,
+            "bestvideo[ext=mp4][height<=1080][vcodec!*=av01][vcodec!*=vp09]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio",
+            "bestvideo[vcodec^=avc][height<=1080]+bestaudio[acodec^=mp4a]/best[height<=1080][vcodec^=avc]/best[height<=1080]",
+            "best[height<=1080]",
         ]
         audio = AUDIO_FORMAT or "m4a"
         maps = {
@@ -142,4 +143,9 @@ class YoutubeDownload(BaseDownloader):
             # formats according to user choice
             default_formats = formats + self._setup_formats()
         self._download(default_formats)
+        # reprocess audio to Telegram-friendly format
+        if self._format == "audio":
+            files = list(Path(self._tempdir.name).glob("*"))
+            if files:
+                convert_audio_format(files, self._bot_msg)
         self._upload()

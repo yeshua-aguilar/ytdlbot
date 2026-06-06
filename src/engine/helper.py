@@ -124,6 +124,52 @@ def convert_audio_format(video_paths: list, bm):
             video_paths[index] = new_path
 
 
+def ensure_streamable_video(video_path: Path) -> Path:
+    """
+    If video is not mp4+h264, re-encode to mp4 with h264+aac so Telegram can stream it.
+    Returns the (possibly new) path.
+    """
+    mime = filetype.guess_mime(str(video_path))
+    if mime and "video" not in mime:
+        return video_path  # not a video, skip
+
+    try:
+        probe = ffmpeg.probe(str(video_path))
+        video_codec = None
+        for stream in probe.get("streams", []):
+            if stream["codec_type"] == "video":
+                video_codec = stream["codec_name"]
+                break
+
+        ext = video_path.suffix.lower()
+        # mp4 + h264 → fine for Telegram
+        if ext == ".mp4" and video_codec == "h264":
+            logging.info("Video is already mp4/h264, no conversion needed: %s", video_path)
+            return video_path
+
+        logging.info("Re-encoding video to mp4/h264/aac: %s (codec=%s, ext=%s)", video_path, video_codec, ext)
+        new_path = video_path.with_suffix(".mp4")
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", str(video_path),
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "23",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-movflags", "+faststart",
+                str(new_path),
+            ],
+            capture_output=True,
+        )
+        video_path.unlink()
+        return new_path
+    except Exception as e:
+        logging.warning("ensure_streamable_video failed for %s: %s, using original", video_path, e)
+        return video_path
+
+
 def split_large_video(video_paths: list):
     original_video = None
     split = False
