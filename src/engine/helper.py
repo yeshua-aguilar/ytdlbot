@@ -127,6 +127,7 @@ def convert_audio_format(video_paths: list, bm):
 def ensure_streamable_video(video_path: Path) -> Path:
     """
     If video is not mp4+h264, re-encode to mp4 with h264+aac so Telegram can stream it.
+    Uses the ffmpeg-python wrapper for better error handling and timeout support.
     Returns the (possibly new) path.
     """
     mime = filetype.guess_mime(str(video_path))
@@ -149,22 +150,27 @@ def ensure_streamable_video(video_path: Path) -> Path:
 
         logging.info("Re-encoding video to mp4/h264/aac: %s (codec=%s, ext=%s)", video_path, video_codec, ext)
         new_path = video_path.with_suffix(".mp4")
-        subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-i", str(video_path),
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "23",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-movflags", "+faststart",
+        (
+            ffmpeg
+            .input(str(video_path))
+            .output(
                 str(new_path),
-            ],
-            capture_output=True,
+                vcodec="libx264",
+                preset="fast",
+                crf=23,
+                acodec="aac",
+                audio_bitrate="128k",
+                movflags="+faststart",
+            )
+            .run(capture_stdout=True, capture_stderr=True, timeout=300)
         )
+        if not new_path.exists() or new_path.stat().st_size == 0:
+            raise RuntimeError(f"ffmpeg produced empty or missing file: {new_path}")
         video_path.unlink()
         return new_path
+    except ffmpeg.Error as e:
+        logging.warning("ensure_streamable_video ffmpeg error for %s: %s", video_path, e.stderr.decode() if e.stderr else str(e))
+        return video_path
     except Exception as e:
         logging.warning("ensure_streamable_video failed for %s: %s, using original", video_path, e)
         return video_path

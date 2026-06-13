@@ -200,7 +200,15 @@ class BaseDownloader(ABC):
             return self._methods[_type](**send_args)
 
     def get_metadata(self):
-        video_path = list(Path(self._tempdir.name).glob("*"))[0]
+        # pick the first video file, skip thumbnails/images
+        video_path = None
+        for p in Path(self._tempdir.name).iterdir():
+            mime = filetype.guess_mime(str(p))
+            if mime and "video" in mime:
+                video_path = p
+                break
+        if not video_path:
+            video_path = list(Path(self._tempdir.name).glob("*"))[0]
         filename = Path(video_path).name
         width = height = duration = 0
         try:

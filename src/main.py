@@ -426,8 +426,6 @@ def quality_callback(client: Client, callback_query: types.CallbackQuery):
 # Singleton queue: (client, bot_msg, url, func)
 _download_queue: Queue = Queue()
 _active_tasks: dict[int, threading.Thread] = {}  # chat_id -> thread
-_queue_counter: int = 0
-_queue_positions: dict[int, int] = {}  # chat_id -> position
 
 
 def _queue_worker():
@@ -441,18 +439,13 @@ def _queue_worker():
             logging.error("Queue task failed: %s", e)
         finally:
             _active_tasks.pop(chat_id, None)
-            _queue_positions.pop(chat_id, None)
             _download_queue.task_done()
 
 
 def _enqueue_download(client, bot_msg, url, func):
-    global _queue_counter
-    chat_id = bot_msg.chat.id
-    _queue_counter += 1
-    pos = _queue_counter
-    _queue_positions[chat_id] = pos
     _download_queue.put((client, bot_msg, url, func))
     # update user about queue position (no debounce)
+    pos = _download_queue.qsize()
     if pos > 1:
         bot_msg.edit_text(f"⏳ Queue position: #{pos}")
 
@@ -462,8 +455,6 @@ def cancel_handler(client: Client, message: types.Message):
     chat_id = message.chat.id
     thread = _active_tasks.get(chat_id)
     if thread and thread.is_alive():
-        # remove from queue positions
-        _queue_positions.pop(chat_id, None)
         # kill thread — safe for yt-dlp since it runs in same process
         # We signal by raising exception through the hook mechanism
         # Hard kill: the thread will be interrupted at next I/O
