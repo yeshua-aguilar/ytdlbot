@@ -88,7 +88,7 @@ def private_use(func):
             users = []
 
         if users and chat_id and chat_id not in users:
-            message.reply_text("BotText.private", quote=True)
+            message.reply_text(BotText.private, quote=True)
             return
 
         return func(client, message)
@@ -365,7 +365,7 @@ def download_handler(client: Client, message: types.Message):
     if AUTHORIZED_USER:
         users = [int(i) for i in AUTHORIZED_USER.split(",")]
         if users and chat_id not in users:
-            message.reply_text("BotText.private", quote=True)
+            message.reply_text(BotText.private, quote=True)
             return
 
     init_user(chat_id)

@@ -6,7 +6,7 @@
 import functools
 import logging
 import os
-import pathlib
+from pathlib import Path
 import re
 import subprocess
 import threading
@@ -63,7 +63,7 @@ def debounce(wait_seconds):
 
 
 def get_caption(url, video_path):
-    if isinstance(video_path, pathlib.Path):
+    if isinstance(video_path, Path):
         meta = get_metadata(video_path)
         file_name = video_path.name
         file_size = sizeof_fmt(os.stat(video_path).st_size)
@@ -182,4 +182,4 @@ def split_large_video(video_paths: list):
             os.remove(original_video)
 
     if split and original_video:
-        return [i for i in pathlib.Path(original_video).parent.glob("*")]
+        return [i for i in Path(original_video).parent.glob("*")]
