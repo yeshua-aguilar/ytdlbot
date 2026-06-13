@@ -32,7 +32,7 @@ class YoutubeDownload(BaseDownloader):
 
     def _setup_formats(self) -> list | None:
         if not is_youtube(self._url):
-            return [None]
+            return ["bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"]
 
         quality, format_ = get_quality_settings(self._chat_id), get_format_settings(self._chat_id)
         # quality: high, medium, low, custom
@@ -104,6 +104,7 @@ class YoutubeDownload(BaseDownloader):
             "embed_metadata": True,
             "embed_thumbnail": True,
             "writethumbnail": False,
+            "format_sort": ["height:1080"],
         }
         # setup cookies for youtube only
         if is_youtube(self._url):
