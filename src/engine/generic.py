@@ -32,17 +32,15 @@ class YoutubeDownload(BaseDownloader):
 
     def _setup_formats(self) -> list | None:
         if not is_youtube(self._url):
-            return ["bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"]
+            return ["best[height<=1080]/best"]
 
         quality, format_ = get_quality_settings(self._chat_id), get_format_settings(self._chat_id)
         # quality: high, medium, low, custom
         # format: audio, video, document
         formats = []
         defaults = [
-            # webm , vp9 and av01 are not streamable on telegram, so we'll extract only mp4
-            "bestvideo[ext=mp4][height<=1080][vcodec!*=av01][vcodec!*=vp09]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio",
-            "bestvideo[vcodec^=avc][height<=1080]+bestaudio[acodec^=mp4a]/best[height<=1080][vcodec^=avc]/best[height<=1080]",
-            "best[height<=1080]",
+            # prefer ≤1080p (fast, no post-processing); fallback to full quality
+            "bestvideo[ext=mp4][height<=1080][vcodec!*=av01][vcodec!*=vp09]+bestaudio[ext=m4a]/best[height<=1080]/bestvideo+bestaudio/best",
         ]
         audio = AUDIO_FORMAT or "m4a"
         maps = {
@@ -96,15 +94,15 @@ class YoutubeDownload(BaseDownloader):
             "restrictfilenames": False,
             "quiet": True,
             "match_filter": match_filter,
-            "concurrent_fragments": 16,
-            "buffersize": 4194304,
+            "concurrent_fragments": 16 if is_youtube(self._url) else 1,
+            "buffersize": 4194304 if is_youtube(self._url) else 1048576,
             "retries": 6,
             "fragment_retries": 6,
             "skip_unavailable_fragments": True,
             "embed_metadata": True,
             "embed_thumbnail": True,
             "writethumbnail": False,
-            "format_sort": ["height:1080"],
+            "format_sort": ["res:1080", "ext"],
         }
         # setup cookies for youtube only
         if is_youtube(self._url):

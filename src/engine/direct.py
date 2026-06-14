@@ -52,7 +52,7 @@ class DirectDownload(BaseDownloader):
             new_name = file.with_suffix(f".{ext}")
             file.rename(new_name)
 
-        return [file.as_posix()]
+        return [file]
 
     def _aria2_download(self):
         ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"

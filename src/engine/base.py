@@ -247,11 +247,7 @@ class BaseDownloader(ABC):
         if files is None:
             files = list(Path(self._tempdir.name).glob("*"))
         if meta is None:
-            meta = self.get_metadata()
-        # re-encode non-streamable videos before upload
-        files = self._reencode_videos(files)
-        if meta is not None and files:
-            # refresh metadata after possible re-encode
+            files = self._reencode_videos(files)
             meta = self.get_metadata()
 
         success = SimpleNamespace(document=None, video=None, audio=None, animation=None, photo=None)

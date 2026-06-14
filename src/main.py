@@ -18,6 +18,7 @@ from collections import OrderedDict
 from io import BytesIO
 from queue import Queue
 from typing import Any
+from urllib.parse import urlparse
 
 import psutil
 import pyrogram.errors
@@ -376,7 +377,11 @@ def download_handler(client: Client, message: types.Message):
     try:
         check_link(url)
         bot_msg: types.Message | Any = message.reply_text("⏳ Task queued.", quote=True)
-        _enqueue_download(client, bot_msg, url, youtube_entrance)
+        # direct media URLs → aria2/requests; everything else → yt-dlp
+        path = urlparse(url).path.lower()
+        is_direct = any(path.endswith(ext) for ext in (".webm", ".mp4", ".avi", ".mkv", ".mov", ".flv", ".gif", ".jpg", ".png"))
+        func = direct_entrance if is_direct else youtube_entrance
+        _enqueue_download(client, bot_msg, url, func)
     except pyrogram.errors.Flood as e:
         f = BytesIO()
         f.write(str(e).encode())
@@ -437,6 +442,10 @@ def _queue_worker():
             func(client, bot_msg, url)
         except Exception as e:
             logging.error("Queue task failed: %s", e)
+            try:
+                bot_msg.edit_text(f"❌ Download failed: {e}")
+            except Exception:
+                pass
         finally:
             _active_tasks.pop(chat_id, None)
             _download_queue.task_done()
