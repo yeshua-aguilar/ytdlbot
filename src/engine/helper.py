@@ -125,54 +125,62 @@ def convert_audio_format(video_paths: list, bm):
 
 
 def ensure_streamable_video(video_path: Path) -> Path:
-    """
-    If video is not mp4+h264, re-encode to mp4 with h264+aac so Telegram can stream it.
-    Uses the ffmpeg-python wrapper for better error handling and timeout support.
-    Returns the (possibly new) path.
-    """
+    video_path = Path(video_path)
     mime = filetype.guess_mime(str(video_path))
     if mime and "video" not in mime:
-        return video_path  # not a video, skip
+        return video_path
 
     try:
         probe = ffmpeg.probe(str(video_path))
         video_codec = None
+        width = 0
+        height = 0
         for stream in probe.get("streams", []):
             if stream["codec_type"] == "video":
                 video_codec = stream["codec_name"]
+                width = stream.get("width", 0) or 0
+                height = stream.get("height", 0) or 0
                 break
 
         ext = video_path.suffix.lower()
-        # mp4 + h264 → fine for Telegram
-        if ext == ".mp4" and video_codec == "h264":
-            logging.info("Video is already mp4/h264, no conversion needed: %s", video_path)
+        if ext == ".mp4" and video_codec == "h264" and width <= 1920 and height <= 1080:
             return video_path
 
-        logging.info("Re-encoding video to mp4/h264/aac: %s (codec=%s, ext=%s)", video_path, video_codec, ext)
-        new_path = video_path.with_suffix(".mp4")
-        (
-            ffmpeg
-            .input(str(video_path))
-            .output(
-                str(new_path),
-                vcodec="libx264",
-                preset="fast",
-                crf=23,
-                acodec="aac",
-                audio_bitrate="128k",
-                movflags="+faststart",
-            )
-            .run(capture_stdout=True, capture_stderr=True, timeout=300)
+        logging.info(
+            "Re-encoding %s: %s (%s, %dx%d)",
+            video_path, video_codec, ext, width, height,
         )
+        new_path = video_path.with_suffix(".mp4")
+
+        args = [
+            "ffmpeg", "-y",
+            "-i", str(video_path),
+            "-vcodec", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "28",
+            "-acodec", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease",
+            str(new_path),
+        ]
+
+        logging.info("ffmpeg: %s", " ".join(args))
+        subprocess.run(args, check=True, capture_output=True, timeout=600)
+
         if not new_path.exists() or new_path.stat().st_size == 0:
             raise RuntimeError(f"ffmpeg produced empty or missing file: {new_path}")
         video_path.unlink()
         return new_path
-    except ffmpeg.Error as e:
-        logging.warning("ensure_streamable_video ffmpeg error for %s: %s", video_path, e.stderr.decode() if e.stderr else str(e))
+    except subprocess.TimeoutExpired:
+        logging.error("ffmpeg timed out for %s after 600s", video_path)
+        return video_path
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode() if e.stderr else str(e)
+        logging.error("ffmpeg error for %s\nstderr: %s", video_path, stderr)
         return video_path
     except Exception as e:
-        logging.warning("ensure_streamable_video failed for %s: %s, using original", video_path, e)
+        logging.error("ensure_streamable_video failed for %s", video_path, exc_info=True)
         return video_path
 
 
