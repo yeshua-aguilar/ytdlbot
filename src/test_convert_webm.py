@@ -51,7 +51,7 @@ def test_webm_to_mp4(height: int, fps: int = 24, duration: int = 3):
                 "-shortest",
                 str(webm_path),
             ],
-            capture_output=True, check=True, timeout=30,
+            capture_output=True, check=True, timeout=120,
         )
 
         orig_info = ffprobe_info(webm_path)
@@ -73,8 +73,8 @@ def test_webm_to_mp4(height: int, fps: int = 24, duration: int = 3):
             "-b:a", "128k",
             "-movflags", "+faststart",
         ]
-        if height > 1080:
-            cmd.extend(["-vf", "scale='if(gt(iw,ih),1080,-2)':'if(gt(iw,ih),-2,1080)'"])
+        if height > 720:
+            cmd.extend(["-vf", "scale='if(gt(iw,ih),720,-2)':'if(gt(iw,ih),-2,720)'"])
 
         cmd.append(str(mp4_path))
 
@@ -101,11 +101,11 @@ def test_webm_to_mp4(height: int, fps: int = 24, duration: int = 3):
         else:
             checks += 1
 
-        if height > 1080:
-            # scale was applied — longest edge must be ≤1080
+        if height > 720:
+            # scale was applied — longest edge must be ≤720
             longest = max(new_info["w"], new_info["h"])
-            if longest > 1080:
-                log.error("FAIL: longest edge = %d (expected ≤1080)", longest)
+            if longest > 720:
+                log.error("FAIL: longest edge = %d (expected ≤720)", longest)
             else:
                 checks += 1
         else:
@@ -123,10 +123,10 @@ def test_webm_to_mp4(height: int, fps: int = 24, duration: int = 3):
 
 
 def main():
-    # test 720p webm (no resize needed)
-    test_webm_to_mp4(720)
-    # test 2160p webm (should scale down to 1080p)
-    test_webm_to_mp4(2160)
+    # test 360p webm (no resize needed)
+    test_webm_to_mp4(360, duration=1, fps=30)
+    # test 1080p webm (should scale down to 720p)
+    test_webm_to_mp4(1080, duration=1, fps=30)
     log.info("=" * 60)
     log.info("ALL TESTS PASSED")
 

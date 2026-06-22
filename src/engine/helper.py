@@ -143,7 +143,7 @@ def ensure_streamable_video(video_path: Path) -> Path:
                 break
 
         ext = video_path.suffix.lower()
-        if ext == ".mp4" and video_codec == "h264" and width <= 1920 and height <= 1080:
+        if ext == ".mp4" and video_codec == "h264" and width <= 1280 and height <= 720:
             return video_path
 
         logging.info(
@@ -161,7 +161,7 @@ def ensure_streamable_video(video_path: Path) -> Path:
             "-acodec", "aac",
             "-b:a", "128k",
             "-movflags", "+faststart",
-            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease",
+            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease",
             str(new_path),
         ]
 
