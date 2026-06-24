@@ -26,8 +26,8 @@ class YoutubeDownload(BaseDownloader):
     @staticmethod
     def get_format(m):
         return [
-            f"bestvideo[ext=mp4][height={m}]+bestaudio[ext=m4a]",
-            f"bestvideo[vcodec^=avc][height={m}]+bestaudio[acodec^=mp4a]/best[vcodec^=avc]/best",
+            f"bestvideo[ext=mp4][height<={m}]+bestaudio[ext=m4a]",
+            f"bestvideo[vcodec^=avc][height<={m}]+bestaudio[acodec^=mp4a]/best[vcodec^=avc]/best",
         ]
 
     def _setup_formats(self) -> list | None:
@@ -127,10 +127,15 @@ class YoutubeDownload(BaseDownloader):
         for f in formats:
             ydl_opts["format"] = f
             logging.info("yt-dlp options: %s", ydl_opts)
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([self._url])
-            files = list(Path(self._tempdir.name).glob("*"))
-            break
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([self._url])
+                files = list(Path(self._tempdir.name).glob("*"))
+                if files:
+                    break
+            except Exception as e:
+                logging.warning("Format %s failed: %s", f, e)
+                continue
 
         return files
 
