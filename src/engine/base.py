@@ -234,7 +234,7 @@ class BaseDownloader(ABC):
         return dict(height=height, width=width, duration=duration, thumb=thumb, caption=caption)
 
     def _reencode_videos(self, files: list) -> list:
-        """Convert non-streamable videos to mp4/h264 for Telegram."""
+        """Convert videos to mp4/h264 and scale to max 720p for Telegram."""
         new_files = []
         for f in files:
             mime = filetype.guess_mime(str(f))
@@ -246,8 +246,12 @@ class BaseDownloader(ABC):
     def _upload(self, files=None, meta=None):
         if files is None:
             files = list(Path(self._tempdir.name).glob("*"))
+        
+        # Always re-encode videos to ensure 720p max resolution
+        # This applies even when meta is provided (e.g., from cache)
+        files = self._reencode_videos(files)
+        
         if meta is None:
-            files = self._reencode_videos(files)
             meta = self.get_metadata()
 
         success = SimpleNamespace(document=None, video=None, audio=None, animation=None, photo=None)
