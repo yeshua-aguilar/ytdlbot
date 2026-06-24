@@ -145,7 +145,8 @@ def ensure_streamable_video(video_path: Path) -> Path:
         ext = video_path.suffix.lower()
         # Always re-encode if video exceeds 720p, regardless of format
         # Skip only if already mp4/h264 AND within 720p limits
-        should_skip = (ext == ".mp4" and video_codec == "h264" and width <= 1280 and height <= 720)
+        max_dimension = max(width, height)
+        should_skip = (ext == ".mp4" and video_codec == "h264" and max_dimension <= 720)
         
         if should_skip:
             logging.info("Video already compliant: %s (%dx%d), skipping", video_path, width, height)
@@ -158,8 +159,15 @@ def ensure_streamable_video(video_path: Path) -> Path:
         new_path = video_path.with_suffix(".mp4")
 
         # Build scale filter: resize to max 720p while preserving aspect ratio
-        # This ensures all videos > 720p are scaled down, regardless of original format
-        scale_filter = "scale='if(gt(iw,ih),min(720,iw),-2)':'if(gt(iw,ih),-2,min(720,ih))':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2"
+        # Simple and reliable: scale height to 720, width auto (-2 ensures divisibility by 2)
+        # For vertical videos, this will scale the longer dimension (height) to 720
+        # For horizontal videos, we need to check which dimension is larger
+        if width > height:
+            # Horizontal video: limit width to 720
+            scale_filter = "scale=min(720\\,iw):-2"
+        else:
+            # Vertical or square video: limit height to 720
+            scale_filter = "scale=-2:min(720\\,ih)"
 
         args = [
             "ffmpeg", "-y",
