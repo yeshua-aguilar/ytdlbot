@@ -157,6 +157,9 @@ def ensure_streamable_video(video_path: Path) -> Path:
             video_path, video_codec, ext, width, height,
         )
         new_path = video_path.with_suffix(".mp4")
+        # Write to a temp file first to avoid in-place overwrite when
+        # video_path already has .mp4 extension (ffmpeg can't read+write same file).
+        temp_path = video_path.with_suffix(".tmp.mp4")
 
         # Build scale filter: resize to max 720p while preserving aspect ratio
         # -2 ensures divisibility by 2. The largest dimension is capped to 720.
@@ -178,15 +181,16 @@ def ensure_streamable_video(video_path: Path) -> Path:
             "-b:a", "128k",
             "-movflags", "+faststart",
             "-vf", scale_filter,
-            str(new_path),
+            str(temp_path),
         ]
 
         logging.info("ffmpeg: %s", " ".join(args))
         subprocess.run(args, check=True, capture_output=True, timeout=600)
 
-        if not new_path.exists() or new_path.stat().st_size == 0:
-            raise RuntimeError(f"ffmpeg produced empty or missing file: {new_path}")
+        if not temp_path.exists() or temp_path.stat().st_size == 0:
+            raise RuntimeError(f"ffmpeg produced empty or missing file: {temp_path}")
         video_path.unlink()
+        temp_path.rename(new_path)
         return new_path
     except subprocess.TimeoutExpired:
         logging.error("ffmpeg timed out for %s after 600s", video_path)
