@@ -74,7 +74,7 @@ def test_webm_to_mp4(height: int, fps: int = 24, duration: int = 3):
             "-movflags", "+faststart",
         ]
         if height > 720:
-            cmd.extend(["-vf", "scale='if(gt(iw,ih),720,-2)':'if(gt(iw,ih),-2,720)'"])
+            cmd.extend(["-vf", "scale='if(gt(iw,ih),min(720,iw),-2)':'if(gt(iw,ih),-2,min(720,ih))':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2"])
 
         cmd.append(str(mp4_path))
 
