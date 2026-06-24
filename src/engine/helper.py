@@ -159,15 +159,14 @@ def ensure_streamable_video(video_path: Path) -> Path:
         new_path = video_path.with_suffix(".mp4")
 
         # Build scale filter: resize to max 720p while preserving aspect ratio
-        # Simple and reliable: scale height to 720, width auto (-2 ensures divisibility by 2)
-        # For vertical videos, this will scale the longer dimension (height) to 720
-        # For horizontal videos, we need to check which dimension is larger
+        # -2 ensures divisibility by 2. The largest dimension is capped to 720.
+        # If video is already ≤720p, should_skip above already returned early.
         if width > height:
-            # Horizontal video: limit width to 720
-            scale_filter = "scale=min(720,iw):-2"
+            # Horizontal video: limit width to 720, height auto
+            scale_filter = "scale=720:-2"
         else:
-            # Vertical or square video: limit height to 720
-            scale_filter = "scale=-2:min(720,ih)"
+            # Vertical or square video: limit height to 720, width auto
+            scale_filter = "scale=-2:720"
 
         args = [
             "ffmpeg", "-y",

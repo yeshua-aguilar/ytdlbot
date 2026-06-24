@@ -20,7 +20,7 @@ import filetype
 from pyrogram import enums, types
 from tqdm import tqdm
 
-from config import TG_NORMAL_MAX_SIZE, Types
+from config import ENABLE_FFMPEG, TG_NORMAL_MAX_SIZE, Types
 from database import Redis
 from database.model import (
     check_quota,
@@ -234,7 +234,13 @@ class BaseDownloader(ABC):
         return dict(height=height, width=width, duration=duration, thumb=thumb, caption=caption)
 
     def _reencode_videos(self, files: list) -> list:
-        """Convert videos to mp4/h264 and scale to max 720p for Telegram."""
+        """Convert videos to mp4/h264 and scale to max 720p for Telegram.
+        
+        Only runs if ENABLE_FFMPEG is truthy. Set ENABLE_FFMPEG=true in env.
+        """
+        if not ENABLE_FFMPEG:
+            logging.info("FFmpeg re-encode disabled by config (ENABLE_FFMPEG=%s)", ENABLE_FFMPEG)
+            return files
         new_files = []
         for f in files:
             mime = filetype.guess_mime(str(f))
