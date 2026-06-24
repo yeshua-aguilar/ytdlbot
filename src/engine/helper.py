@@ -164,10 +164,10 @@ def ensure_streamable_video(video_path: Path) -> Path:
         # For horizontal videos, we need to check which dimension is larger
         if width > height:
             # Horizontal video: limit width to 720
-            scale_filter = "scale=min(720\\,iw):-2"
+            scale_filter = "scale=min(720,iw):-2"
         else:
             # Vertical or square video: limit height to 720
-            scale_filter = "scale=-2:min(720\\,ih)"
+            scale_filter = "scale=-2:min(720,ih)"
 
         args = [
             "ffmpeg", "-y",
