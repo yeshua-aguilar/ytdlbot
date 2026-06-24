@@ -39,6 +39,8 @@ services:
     build: .
     env_file:
       - .env
+    environment:
+      - ENABLE_FFMPEG=true
     restart: always
     volumes:
       - ./youtube-cookies.txt:/app/youtube-cookies.txt
