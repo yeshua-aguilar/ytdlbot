@@ -226,7 +226,7 @@ class BaseDownloader(ABC):
                 "scale",
                 "if(gt(iw,ih),300,-1)",  # If width > height, scale width to 320 and height auto
                 "if(gt(iw,ih),-1,300)",
-            ).output(thumb, vframes=1).run()
+            ).output(thumb, vframes=1, update=1).run()
         except ffmpeg._run.Error:
             thumb = None
 
