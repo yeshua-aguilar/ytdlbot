@@ -143,6 +143,7 @@ def ensure_streamable_video(video_path: Path) -> Path:
                 break
 
         ext = video_path.suffix.lower()
+        # Only skip re-encoding if already mp4/h264 and within Telegram limits (720p max)
         if ext == ".mp4" and video_codec == "h264" and width <= 1280 and height <= 720:
             return video_path
 
@@ -151,6 +152,9 @@ def ensure_streamable_video(video_path: Path) -> Path:
             video_path, video_codec, ext, width, height,
         )
         new_path = video_path.with_suffix(".mp4")
+
+        # Build scale filter: resize to max 720p while preserving aspect ratio
+        scale_filter = "scale='if(gt(iw,ih),min(720,iw),-2)':'if(gt(iw,ih),-2,min(720,ih))':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2"
 
         args = [
             "ffmpeg", "-y",
@@ -161,7 +165,7 @@ def ensure_streamable_video(video_path: Path) -> Path:
             "-acodec", "aac",
             "-b:a", "128k",
             "-movflags", "+faststart",
-            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease",
+            "-vf", scale_filter,
             str(new_path),
         ]
 
