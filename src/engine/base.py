@@ -237,15 +237,18 @@ class BaseDownloader(ABC):
         """Convert videos to mp4/h264 and scale to max 720p for Telegram.
         
         Only runs if ENABLE_FFMPEG is truthy. Set ENABLE_FFMPEG=true in env.
+        Skips items that are not real files (e.g. Telegram file_ids from cache).
         """
         if not ENABLE_FFMPEG:
             logging.info("FFmpeg re-encode disabled by config (ENABLE_FFMPEG=%s)", ENABLE_FFMPEG)
             return files
         new_files = []
         for f in files:
-            mime = filetype.guess_mime(str(f))
-            if mime and "video" in mime:
-                f = ensure_streamable_video(f)
+            f_path = Path(f)
+            if f_path.exists():
+                mime = filetype.guess_mime(str(f))
+                if mime and "video" in mime:
+                    f = ensure_streamable_video(f)
             new_files.append(f)
         return new_files
 
