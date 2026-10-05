@@ -1,7 +1,7 @@
 name: Deploy to VPS
 
-# Compila la app en GitHub (wheels + .env desde Secrets) y la despliega
-# en el VPS por SSH/SCP, SIN Docker. Se ejecuta sólo en la rama master-yeshua.
+# Compila la app en GitHub (wheels + .env desde Secrets) y la despliega en el VPS
+# por SSH/SCP, SIN Docker. Se ejecuta sólo en la rama master-yeshua.
 #
 # Secrets requeridos (Settings -> Secrets and variables -> Actions):
 #   App:  APP_HASH APP_ID BOT_TOKEN BROWSERS BYPASS_CLOUDFLARE CAPTION_URL_LENGTH_LIMIT
@@ -28,21 +28,135 @@ env:
   SERVICE_NAME: ytdlbot
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # 1) BUILD: se compila TODO en el runner de GitHub
-  # ---------------------------------------------------------------------------
-  build:
-    name: Build (GitHub)
+  deploy:
+    name: Build & Deploy (GitHub -> VPS)
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout master-yeshua
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.12
+      # -----------------------------------------------------------------
+      # 1) Credenciales SSH + detección de la versión de Python del VPS
+      # -----------------------------------------------------------------
+      - name: Detectar SSH y Python del VPS
+        id: probe
+        env:
+          VPS_IP: ${{ secrets.VPS_IP }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_CLAVE: ${{ secrets.VPS_CLAVE }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          REMOTE="${VPS_USER}@${VPS_IP}"
+
+          # VPS_CLAVE puede ser una clave privada SSH (PEM "BEGIN RSA PRIVATE KEY",
+          # PKCS#8, ECDSA u OpenSSH) o una contraseña. Se autodetecta.
+          if printf '%s' "$VPS_CLAVE" | grep -qE "BEGIN (RSA |EC |DSA |OPENSSH |)PRIVATE KEY"; then
+            echo "Autenticación: clave privada SSH"
+            # Normaliza CRLF y "\n" literales que se cuelan al pegar el secret
+            has_real_newline=0
+            case "$VPS_CLAVE" in *$'\n'*) has_real_newline=1 ;; esac
+            if [ "$has_real_newline" = "1" ]; then printf '%s' "$VPS_CLAVE" > ~/.ssh/id_deploy; else printf '%b' "$VPS_CLAVE" > ~/.ssh/id_deploy; fi
+            sed -i 's/\r$//; /^[[:space:]]*$/d' ~/.ssh/id_deploy
+            if [ -n "$(tail -c 1 ~/.ssh/id_deploy)" ]; then printf '\n' >> ~/.ssh/id_deploy; fi
+            chmod 600 ~/.ssh/id_deploy
+            # Valida que la clave sea legible y sin passphrase
+            if ! ssh-keygen -y -P '' -f ~/.ssh/id_deploy >/dev/null 2>&1 < /dev/null; then
+              echo "::error::VPS_CLAVE no es una clave privada SSH válida o está cifrada con passphrase."
+              exit 1
+            fi
+            cat > ~/.ssh/rssh <<'WRAP'
+          #!/usr/bin/env bash
+          exec ssh -i "$HOME/.ssh/id_deploy" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30 -o IdentitiesOnly=yes "$@"
+          WRAP
+            cat > ~/.ssh/rscp <<'WRAP'
+          #!/usr/bin/env bash
+          exec scp -i "$HOME/.ssh/id_deploy" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30 -o IdentitiesOnly=yes "$@"
+          WRAP
+          else
+            echo "Autenticación: contraseña SSH (sshpass)"
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq sshpass
+            printf '%s' "$VPS_CLAVE" > ~/.ssh/vps_pass
+            chmod 600 ~/.ssh/vps_pass
+            cat > ~/.ssh/rssh <<'WRAP'
+          #!/usr/bin/env bash
+          exec sshpass -f "$HOME/.ssh/vps_pass" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30 "$@"
+          WRAP
+            cat > ~/.ssh/rscp <<'WRAP'
+          #!/usr/bin/env bash
+          exec sshpass -f "$HOME/.ssh/vps_pass" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30 "$@"
+          WRAP
+          fi
+          chmod 700 ~/.ssh/rssh ~/.ssh/rscp
+
+          # Detecta la mejor versión de Python disponible en el VPS (3.10-3.13).
+          # Si no hay ninguna, intenta instalarla (dnf/yum/apt) y reintenta.
+          echo "==> Detectando Python compatible en el VPS ..."
+          set +e
+          ~/.ssh/rssh "$REMOTE" bash -s > /tmp/vps_probe.out 2>/tmp/vps_probe.err <<'EOS'
+          set -u
+
+          detect() {
+            for v in 3.12 3.13 3.11 3.10; do
+              if command -v "python$v" >/dev/null 2>&1 && "python$v" -c 'import ensurepip' >/dev/null 2>&1; then
+                echo "$v"; return 0
+              fi
+            done
+            if command -v python3 >/dev/null 2>&1; then
+              v="$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || true)"
+              case "$v" in
+                3.10|3.11|3.12|3.13) if python3 -c 'import ensurepip' >/dev/null 2>&1; then echo "$v"; return 0; fi ;;
+              esac
+            fi
+            return 1
+          }
+
+          if ver="$(detect)"; then echo "$ver"; exit 0; fi
+
+          echo "==> No hay Python 3.10-3.13 con venv; intentando instalar python3.12 ..." >&2
+          if command -v dnf >/dev/null 2>&1; then
+            sudo -n dnf install -y python3.12 python3.12-pip >/dev/null 2>&1 || true
+            if ! command -v python3.12 >/dev/null 2>&1; then
+              sudo -n dnf module enable -y python312 >/dev/null 2>&1 || true
+              sudo -n dnf install -y python3.12 >/dev/null 2>&1 || true
+            fi
+          elif command -v yum >/dev/null 2>&1; then
+            sudo -n yum install -y python3.12 >/dev/null 2>&1 || true
+          elif command -v apt-get >/dev/null 2>&1; then
+            sudo -n apt-get update -qq >/dev/null 2>&1 || true
+            sudo -n apt-get install -y python3.12 python3.12-venv >/dev/null 2>&1 || true
+          fi
+
+          if ver="$(detect)"; then echo "$ver"; exit 0; fi
+          echo "NONE"
+          EOS
+          probe_rc=$?
+          set -e
+          if [ -s /tmp/vps_probe.err ]; then cat /tmp/vps_probe.err || true; fi
+          if [ "$probe_rc" -ne 0 ]; then
+            echo "::error::Falló la conexión SSH al VPS (¿VPS_IP / VPS_USER / VPS_CLAVE?). Revisa el log anterior."
+            exit 1
+          fi
+          REMOTE_PY="$(tail -n 1 /tmp/vps_probe.out | tr -d '[:space:]')"
+          if [ -z "$REMOTE_PY" ] || [ "$REMOTE_PY" = "NONE" ]; then
+            echo "::error::No se encontró (ni se pudo instalar) Python 3.10-3.13 en el VPS."
+            echo "Instálalo manualmente, por ejemplo:"
+            echo "  Oracle/RHEL:   sudo dnf install -y python3.12 python3.12-pip"
+            echo "  Debian/Ubuntu: sudo apt-get install -y python3.12 python3.12-venv"
+            exit 1
+          fi
+          echo "Python detectado en el VPS: $REMOTE_PY"
+          echo "pyver=$REMOTE_PY" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------
+      # 2) Compilar en GitHub con la MISMA versión de Python del VPS
+      # -----------------------------------------------------------------
+      - name: Setup Python ${{ steps.probe.outputs.pyver }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ steps.probe.outputs.pyver }}
 
       - name: Compilar/validar código (compileall)
         run: python -m compileall -q src
@@ -52,6 +166,7 @@ jobs:
           python -m pip install --upgrade pip wheel
           mkdir -p dist/wheels
           pip wheel --wheel-dir dist/wheels -r requirements.txt
+          echo "Wheels generados con $(python -V): $(ls dist/wheels | wc -l)"
 
       - name: Generar .env desde los Secrets
         env:
@@ -99,112 +214,57 @@ jobs:
           cp -r dist/wheels build/release/wheels
           cp requirements.txt build/release/
           cp .env build/release/.env
+          printf '%s' "${{ steps.probe.outputs.pyver }}" > build/release/PYTHON_VERSION
           [ -f youtube-cookies.txt ] && cp youtube-cookies.txt build/release/ || true
           tar -C build/release -czf ytdlbot-release.tar.gz .
           ls -lh ytdlbot-release.tar.gz
 
-      - name: Subir artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ytdlbot-release
-          path: ytdlbot-release.tar.gz
-          retention-days: 5
-
-
-  # ---------------------------------------------------------------------------
-  # 2) DEPLOY: se copia al VPS y se reinicia el servicio systemd
-  # ---------------------------------------------------------------------------
-  deploy:
-    name: Deploy (VPS)
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref_name == 'master-yeshua'
-
-    steps:
-      - name: Descargar artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ytdlbot-release
-
-      - name: Desplegar en el VPS por SSH
+      # -----------------------------------------------------------------
+      # 3) Copiar al VPS y reiniciar el servicio systemd
+      # -----------------------------------------------------------------
+      - name: Desplegar en el VPS
         env:
           VPS_IP: ${{ secrets.VPS_IP }}
           VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_CLAVE: ${{ secrets.VPS_CLAVE }}
           RELEASE_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-
-          mkdir -p ~/.ssh
-          OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30)
           REMOTE="${VPS_USER}@${VPS_IP}"
 
-          # VPS_CLAVE puede ser una clave privada SSH (PEM "BEGIN RSA PRIVATE KEY",
-          # PKCS#8, ECDSA u OpenSSH) o una contraseña. Se autodetecta.
-          if printf '%s' "$VPS_CLAVE" | grep -qE "BEGIN (RSA |EC |DSA |OPENSSH |)PRIVATE KEY"; then
-            echo "Autenticación: clave privada SSH"
-            # Normaliza CRLF y "\n" literales que se cuelan al pegar el secret
-            has_real_newline=0
-            case "$VPS_CLAVE" in
-              *$'\n'*) has_real_newline=1 ;;
-            esac
-            if [ "$has_real_newline" = "1" ]; then
-              printf '%s' "$VPS_CLAVE" > ~/.ssh/id_deploy
-            else
-              printf '%b' "$VPS_CLAVE" > ~/.ssh/id_deploy
-            fi
-            # Quita CR/saltos vacíos y garantiza un único salto de línea final
-            sed -i 's/\r$//; /^[[:space:]]*$/d' ~/.ssh/id_deploy
-            if [ -n "$(tail -c 1 ~/.ssh/id_deploy)" ]; then printf '\n' >> ~/.ssh/id_deploy; fi
-            chmod 600 ~/.ssh/id_deploy
-            # Valida el formato/descifrabilidad de la clave (falla con mensaje claro)
-            if ! ssh-keygen -y -P '' -f ~/.ssh/id_deploy >/dev/null 2>&1 < /dev/null; then
-              echo "ERROR: VPS_CLAVE no es una clave privada SSH válida o está cifrada con passphrase."
-              echo "       Revisa que al pegarla en el secret se conserven los saltos de línea y que sea la clave privada sin passphrase."
-              exit 1
-            fi
-            SSH=(ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes "${OPTS[@]}")
-            SCP=(scp -i ~/.ssh/id_deploy -o IdentitiesOnly=yes "${OPTS[@]}")
-          else
-            echo "Autenticación: contraseña SSH (sshpass)"
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq sshpass
-            export SSHPASS="$VPS_CLAVE"
-            SSH=(sshpass -e ssh "${OPTS[@]}")
-            SCP=(sshpass -e scp "${OPTS[@]}")
-          fi
-
           echo "==> Subiendo artefacto a ${REMOTE} ..."
-          "${SCP[@]}" ytdlbot-release.tar.gz "${REMOTE}:/tmp/ytdlbot-release.tar.gz"
+          ~/.ssh/rscp ytdlbot-release.tar.gz "${REMOTE}:/tmp/ytdlbot-release.tar.gz"
 
           echo "==> Ejecutando despliegue remoto ..."
-          "${SSH[@]}" "$REMOTE" "RELEASE_ID=${RELEASE_ID} SERVICE_NAME=${SERVICE_NAME} APP_DIR=${APP_DIR} bash -s" <<'REMOTE_SCRIPT'
-
+          ~/.ssh/rssh "$REMOTE" "RELEASE_ID=${RELEASE_ID} SERVICE_NAME=${SERVICE_NAME} APP_DIR=${APP_DIR} bash -s" <<'REMOTE_SCRIPT'
           set -euo pipefail
 
           echo "==> VPS: $(uname -srm)"
 
-          # --- Prerequisitos del VPS ------------------------------------------
-          command -v python3.12 >/dev/null 2>&1 || {
-            echo "ERROR: python3.12 no está instalado en el VPS (los wheels se compilan para cp312)."; exit 1; }
-          python3.12 -c 'import ensurepip' >/dev/null 2>&1 || {
-            echo "ERROR: falta venv/ensurepip. Instala python3.12-venv en el VPS."; exit 1; }
-          sudo -n true >/dev/null 2>&1 || {
-            echo "ERROR: se requiere sudo sin contraseña en el VPS (apt/systemctl)."; exit 1; }
+          sudo -n true >/dev/null 2>&1 || { echo "ERROR: se requiere sudo sin contraseña en el VPS (para dnf/apt y systemctl)."; exit 1; }
 
+          APP_OWNER="$(whoami)"
           sudo -n mkdir -p "$APP_DIR/releases"
-          sudo -n chown -R "$(whoami):$(whoami)" "$APP_DIR"
+          sudo -n chown -R "$APP_OWNER:$APP_OWNER" "$APP_DIR"
 
-          install_pkg() {
-            pkg="$1"; bin="$2"
-            command -v "$bin" >/dev/null 2>&1 && return 0
-            echo "==> Instalando $pkg ..."
-            if ! { sudo -n apt-get update -qq && sudo -n apt-get install -y -qq "$pkg"; }; then
-              echo "WARN: no se pudo instalar $pkg (continúo)."
+          pkg_install() {
+            if command -v dnf >/dev/null 2>&1; then
+              sudo -n dnf install -y "$@"
+            elif command -v yum >/dev/null 2>&1; then
+              sudo -n yum install -y "$@"
+            elif command -v apt-get >/dev/null 2>&1; then
+              sudo -n apt-get update -qq && sudo -n apt-get install -y -qq "$@"
+            else
+              return 1
             fi
           }
+          install_pkg() {
+            bin="$1"; shift
+            command -v "$bin" >/dev/null 2>&1 && return 0
+            echo "==> Instalando paquete(s) para $bin ..."
+            pkg_install "$@" >/dev/null 2>&1 || echo "WARN: no se pudo instalar $bin (continúo)."
+          }
           install_pkg ffmpeg ffmpeg
-          install_pkg aria2 aria2c
+          install_pkg aria2c aria2
 
           # --- Extraer release -------------------------------------------------
           RELEASE_DIR="$APP_DIR/releases/$RELEASE_ID"
@@ -213,9 +273,23 @@ jobs:
           tar -xzf /tmp/ytdlbot-release.tar.gz -C "$RELEASE_DIR"
           rm -f /tmp/ytdlbot-release.tar.gz
 
-          # --- Venv + instalación desde wheels locales -------------------------
+          # --- Python detectado en CI (debe coincidir con el del VPS) ----------
+          PY="$(tr -d '[:space:]' < "$RELEASE_DIR/PYTHON_VERSION")"
+          if command -v "python$PY" >/dev/null 2>&1; then PYBIN="python$PY"; else PYBIN="python3"; fi
+          CURPY="$("$PYBIN" -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo none)"
+          if [ "$CURPY" != "$PY" ]; then
+            echo "ERROR: se esperaba Python $PY en el VPS pero $PYBIN es $CURPY"; exit 1
+          fi
+          echo "==> Usando $PYBIN (Python $PY)"
+
+          # --- venv (se recrea si cambió la versión de Python) -----------------
           VENV="$APP_DIR/venv"
-          [ -x "$VENV/bin/python" ] || python3.12 -m venv "$VENV"
+          if [ -x "$VENV/bin/python" ]; then
+            VENVV="$("$VENV/bin/python" -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo none)"
+            if [ "$VENVV" != "$PY" ]; then echo "==> Python del venv cambió ($VENVV -> $PY): recreando"; rm -rf "$VENV"; fi
+          fi
+          if [ ! -x "$VENV/bin/python" ]; then "$PYBIN" -m venv "$VENV"; fi
+
           echo "==> Instalando dependencias desde wheels pre-compilados"
           "$VENV/bin/python" -m pip install --no-index --find-links "$RELEASE_DIR/wheels" -r "$RELEASE_DIR/requirements.txt"
 
@@ -225,7 +299,6 @@ jobs:
           ln -sfn "$RELEASE_DIR" "$APP_DIR/current"
 
           # --- Servicio systemd ------------------------------------------------
-          RUN_USER="$(whoami)"
           sudo -n tee "/etc/systemd/system/$SERVICE_NAME.service" >/dev/null <<UNIT
           [Unit]
           Description=ytdlbot Telegram bot
@@ -234,7 +307,7 @@ jobs:
 
           [Service]
           Type=simple
-          User=$RUN_USER
+          User=$APP_OWNER
           WorkingDirectory=$APP_DIR/current
           ExecStart=$VENV/bin/python main.py
           Restart=always
@@ -272,5 +345,4 @@ jobs:
           ls -1dt */ 2>/dev/null | tail -n +4 | xargs -r rm -rf || true
           REMOTE_SCRIPT
 
-          echo "==> Deploy completado: release ${RELEASE_ID} en ${VPS_USER}@${VPS_IP}:${APP_DIR}/current"
-
+          echo "==> Deploy completado: release ${RELEASE_ID} en ${REMOTE}:${APP_DIR}/current"
