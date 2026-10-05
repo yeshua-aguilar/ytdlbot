@@ -1,0 +1,276 @@
+name: Deploy to VPS
+
+# Compila la app en GitHub (wheels + .env desde Secrets) y la despliega
+# en el VPS por SSH/SCP, SIN Docker. Se ejecuta sólo en la rama master-yeshua.
+#
+# Secrets requeridos (Settings -> Secrets and variables -> Actions):
+#   App:  APP_HASH APP_ID BOT_TOKEN BROWSERS BYPASS_CLOUDFLARE CAPTION_URL_LENGTH_LIMIT
+#         DB_DSN ENABLE_ARIA2 ENABLE_FFMPEG ENABLE_VIP FREE_DOWNLOAD M3U8_SUPPORT
+#         OWNER POTOKEN RATE_LIMIT REDIS_HOST TG_NORMAL_MAX_SIZE WORKERS
+#   VPS:  VPS_IP VPS_USER VPS_CLAVE   (VPS_CLAVE = clave privada SSH o contraseña)
+
+on:
+  push:
+    branches:
+      - master-yeshua
+  workflow_dispatch:
+
+# Nunca dos deploys a la vez
+concurrency:
+  group: deploy-master-yeshua
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  APP_DIR: /opt/ytdlbot
+  SERVICE_NAME: ytdlbot
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) BUILD: se compila TODO en el runner de GitHub
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build (GitHub)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout master-yeshua
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compilar/validar código (compileall)
+        run: python -m compileall -q src
+
+      - name: Compilar wheels de las dependencias
+        run: |
+          python -m pip install --upgrade pip wheel
+          mkdir -p dist/wheels
+          pip wheel --wheel-dir dist/wheels -r requirements.txt
+
+      - name: Generar .env desde los Secrets
+        env:
+          WORKERS: ${{ secrets.WORKERS }}
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_HASH: ${{ secrets.APP_HASH }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          OWNER: ${{ secrets.OWNER }}
+          DB_DSN: ${{ secrets.DB_DSN }}
+          REDIS_HOST: ${{ secrets.REDIS_HOST }}
+          ENABLE_FFMPEG: ${{ secrets.ENABLE_FFMPEG }}
+          M3U8_SUPPORT: ${{ secrets.M3U8_SUPPORT }}
+          ENABLE_ARIA2: ${{ secrets.ENABLE_ARIA2 }}
+          BYPASS_CLOUDFLARE: ${{ secrets.BYPASS_CLOUDFLARE }}
+          ENABLE_VIP: ${{ secrets.ENABLE_VIP }}
+          FREE_DOWNLOAD: ${{ secrets.FREE_DOWNLOAD }}
+          RATE_LIMIT: ${{ secrets.RATE_LIMIT }}
+          TG_NORMAL_MAX_SIZE: ${{ secrets.TG_NORMAL_MAX_SIZE }}
+          CAPTION_URL_LENGTH_LIMIT: ${{ secrets.CAPTION_URL_LENGTH_LIMIT }}
+          POTOKEN: ${{ secrets.POTOKEN }}
+          BROWSERS: ${{ secrets.BROWSERS }}
+        run: |
+          python - <<'PY'
+          import os
+
+          keys = [
+              "WORKERS", "APP_ID", "APP_HASH", "BOT_TOKEN", "OWNER",
+              "DB_DSN", "REDIS_HOST", "ENABLE_FFMPEG", "M3U8_SUPPORT",
+              "ENABLE_ARIA2", "BYPASS_CLOUDFLARE", "ENABLE_VIP",
+              "FREE_DOWNLOAD", "RATE_LIMIT", "TG_NORMAL_MAX_SIZE",
+              "CAPTION_URL_LENGTH_LIMIT", "POTOKEN", "BROWSERS",
+          ]
+          with open(".env", "w", encoding="utf-8") as fh:
+              for key in keys:
+                  fh.write(f"{key}={os.environ.get(key, '')}\n")
+          os.chmod(".env", 0o600)
+          print("Generadas", len(keys), "variables en .env")
+          PY
+
+      - name: Empaquetar release (src + wheels + .env)
+        run: |
+          find src -name __pycache__ -type d -prune -exec rm -rf {} +
+          mkdir -p build/release
+          cp -r src/. build/release/
+          cp -r dist/wheels build/release/wheels
+          cp requirements.txt build/release/
+          cp .env build/release/.env
+          [ -f youtube-cookies.txt ] && cp youtube-cookies.txt build/release/ || true
+          tar -C build/release -czf ytdlbot-release.tar.gz .
+          ls -lh ytdlbot-release.tar.gz
+
+      - name: Subir artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytdlbot-release
+          path: ytdlbot-release.tar.gz
+          retention-days: 5
+
+
+  # ---------------------------------------------------------------------------
+  # 2) DEPLOY: se copia al VPS y se reinicia el servicio systemd
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy (VPS)
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref_name == 'master-yeshua'
+
+    steps:
+      - name: Descargar artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ytdlbot-release
+
+      - name: Desplegar en el VPS por SSH
+        env:
+          VPS_IP: ${{ secrets.VPS_IP }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_CLAVE: ${{ secrets.VPS_CLAVE }}
+          RELEASE_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p ~/.ssh
+          OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30)
+          REMOTE="${VPS_USER}@${VPS_IP}"
+
+          # VPS_CLAVE puede ser una clave privada SSH (PEM "BEGIN RSA PRIVATE KEY",
+          # PKCS#8, ECDSA u OpenSSH) o una contraseña. Se autodetecta.
+          if printf '%s' "$VPS_CLAVE" | grep -qE "BEGIN (RSA |EC |DSA |OPENSSH |)PRIVATE KEY"; then
+            echo "Autenticación: clave privada SSH"
+            # Normaliza CRLF y "\n" literales que se cuelan al pegar el secret
+            has_real_newline=0
+            case "$VPS_CLAVE" in
+              *$'\n'*) has_real_newline=1 ;;
+            esac
+            if [ "$has_real_newline" = "1" ]; then
+              printf '%s' "$VPS_CLAVE" > ~/.ssh/id_deploy
+            else
+              printf '%b' "$VPS_CLAVE" > ~/.ssh/id_deploy
+            fi
+            # Quita CR/saltos vacíos y garantiza un único salto de línea final
+            sed -i 's/\r$//; /^[[:space:]]*$/d' ~/.ssh/id_deploy
+            if [ -n "$(tail -c 1 ~/.ssh/id_deploy)" ]; then printf '\n' >> ~/.ssh/id_deploy; fi
+            chmod 600 ~/.ssh/id_deploy
+            # Valida el formato/descifrabilidad de la clave (falla con mensaje claro)
+            if ! ssh-keygen -y -P '' -f ~/.ssh/id_deploy >/dev/null 2>&1 < /dev/null; then
+              echo "ERROR: VPS_CLAVE no es una clave privada SSH válida o está cifrada con passphrase."
+              echo "       Revisa que al pegarla en el secret se conserven los saltos de línea y que sea la clave privada sin passphrase."
+              exit 1
+            fi
+            SSH=(ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes "${OPTS[@]}")
+            SCP=(scp -i ~/.ssh/id_deploy -o IdentitiesOnly=yes "${OPTS[@]}")
+          else
+            echo "Autenticación: contraseña SSH (sshpass)"
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq sshpass
+            export SSHPASS="$VPS_CLAVE"
+            SSH=(sshpass -e ssh "${OPTS[@]}")
+            SCP=(sshpass -e scp "${OPTS[@]}")
+          fi
+
+          echo "==> Subiendo artefacto a ${REMOTE} ..."
+          "${SCP[@]}" ytdlbot-release.tar.gz "${REMOTE}:/tmp/ytdlbot-release.tar.gz"
+
+          echo "==> Ejecutando despliegue remoto ..."
+          "${SSH[@]}" "$REMOTE" "RELEASE_ID=${RELEASE_ID} SERVICE_NAME=${SERVICE_NAME} APP_DIR=${APP_DIR} bash -s" <<'REMOTE_SCRIPT'
+
+          set -euo pipefail
+
+          echo "==> VPS: $(uname -srm)"
+
+          # --- Prerequisitos del VPS ------------------------------------------
+          command -v python3.12 >/dev/null 2>&1 || {
+            echo "ERROR: python3.12 no está instalado en el VPS (los wheels se compilan para cp312)."; exit 1; }
+          python3.12 -c 'import ensurepip' >/dev/null 2>&1 || {
+            echo "ERROR: falta venv/ensurepip. Instala python3.12-venv en el VPS."; exit 1; }
+          sudo -n true >/dev/null 2>&1 || {
+            echo "ERROR: se requiere sudo sin contraseña en el VPS (apt/systemctl)."; exit 1; }
+
+          sudo -n mkdir -p "$APP_DIR/releases"
+          sudo -n chown -R "$(whoami):$(whoami)" "$APP_DIR"
+
+          install_pkg() {
+            pkg="$1"; bin="$2"
+            command -v "$bin" >/dev/null 2>&1 && return 0
+            echo "==> Instalando $pkg ..."
+            if ! { sudo -n apt-get update -qq && sudo -n apt-get install -y -qq "$pkg"; }; then
+              echo "WARN: no se pudo instalar $pkg (continúo)."
+            fi
+          }
+          install_pkg ffmpeg ffmpeg
+          install_pkg aria2 aria2c
+
+          # --- Extraer release -------------------------------------------------
+          RELEASE_DIR="$APP_DIR/releases/$RELEASE_ID"
+          rm -rf "$RELEASE_DIR"
+          mkdir -p "$RELEASE_DIR"
+          tar -xzf /tmp/ytdlbot-release.tar.gz -C "$RELEASE_DIR"
+          rm -f /tmp/ytdlbot-release.tar.gz
+
+          # --- Venv + instalación desde wheels locales -------------------------
+          VENV="$APP_DIR/venv"
+          [ -x "$VENV/bin/python" ] || python3.12 -m venv "$VENV"
+          echo "==> Instalando dependencias desde wheels pre-compilados"
+          "$VENV/bin/python" -m pip install --no-index --find-links "$RELEASE_DIR/wheels" -r "$RELEASE_DIR/requirements.txt"
+
+          # --- Activar release (symlink atómico) -------------------------------
+          PREV=""
+          if [ -L "$APP_DIR/current" ]; then PREV="$(readlink -f "$APP_DIR/current")"; fi
+          ln -sfn "$RELEASE_DIR" "$APP_DIR/current"
+
+          # --- Servicio systemd ------------------------------------------------
+          RUN_USER="$(whoami)"
+          sudo -n tee "/etc/systemd/system/$SERVICE_NAME.service" >/dev/null <<UNIT
+          [Unit]
+          Description=ytdlbot Telegram bot
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=$RUN_USER
+          WorkingDirectory=$APP_DIR/current
+          ExecStart=$VENV/bin/python main.py
+          Restart=always
+          RestartSec=5
+          StandardOutput=journal
+          StandardError=journal
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          sudo -n systemctl daemon-reload
+          sudo -n systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || true
+          sudo -n systemctl restart "$SERVICE_NAME"
+
+          # --- Verificación + rollback -----------------------------------------
+          echo "==> Esperando arranque ..."
+          sleep 6
+          if sudo -n systemctl is-active --quiet "$SERVICE_NAME"; then
+            echo "OK: despliegue correcto -> $RELEASE_DIR"
+            sudo -n journalctl -u "$SERVICE_NAME" -n 25 --no-pager || true
+          else
+            echo "ERROR: el servicio no arrancó. Log:"
+            sudo -n journalctl -u "$SERVICE_NAME" -n 50 --no-pager || true
+            if [ -n "$PREV" ] && [ -d "$PREV" ]; then
+              ln -sfn "$PREV" "$APP_DIR/current"
+              sudo -n systemctl restart "$SERVICE_NAME" || true
+              echo "Rollback aplicado a $PREV"
+            fi
+            exit 1
+          fi
+
+          # --- Limpieza: conservar las 3 últimas releases ----------------------
+          cd "$APP_DIR/releases"
+          ls -1dt */ 2>/dev/null | tail -n +4 | xargs -r rm -rf || true
+          REMOTE_SCRIPT
+
+          echo "==> Deploy completado: release ${RELEASE_ID} en ${VPS_USER}@${VPS_IP}:${APP_DIR}/current"
+
