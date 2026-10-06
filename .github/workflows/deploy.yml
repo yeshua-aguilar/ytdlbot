@@ -99,34 +99,36 @@ jobs:
           set -u
 
           detect() {
-            for v in 3.12 3.13 3.11 3.10; do
+            # Nombres explícitos por orden de preferencia (3.12 = versión de referencia del proyecto)
+            for v in 3.12 3.13 3.14 3.15 3.11 3.10; do
               if command -v "python$v" >/dev/null 2>&1 && "python$v" -c 'import ensurepip' >/dev/null 2>&1; then
                 echo "$v"; return 0
               fi
             done
+            # Fallback: cualquier python3.x >= 3.10 disponible en el PATH
             if command -v python3 >/dev/null 2>&1; then
               v="$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || true)"
-              case "$v" in
-                3.10|3.11|3.12|3.13) if python3 -c 'import ensurepip' >/dev/null 2>&1; then echo "$v"; return 0; fi ;;
-              esac
+              maj="${v%%.*}"; min="${v#*.}"
+              if [ "$maj" = "3" ] && [ "${min:-0}" -ge 10 ] 2>/dev/null; then
+                if python3 -c 'import ensurepip' >/dev/null 2>&1; then echo "$v"; return 0; fi
+              fi
             fi
             return 1
           }
 
           if ver="$(detect)"; then echo "$ver"; exit 0; fi
 
-          echo "==> No hay Python 3.10-3.13 con venv; intentando instalar python3.12 ..." >&2
+          echo "==> No hay Python 3.10+ con venv; intentando instalar el Python de la distro ..." >&2
           if command -v dnf >/dev/null 2>&1; then
+            sudo -n dnf install -y python3 python3-pip >/dev/null 2>&1 || true
             sudo -n dnf install -y python3.12 python3.12-pip >/dev/null 2>&1 || true
-            if ! command -v python3.12 >/dev/null 2>&1; then
-              sudo -n dnf module enable -y python312 >/dev/null 2>&1 || true
-              sudo -n dnf install -y python3.12 >/dev/null 2>&1 || true
-            fi
+            sudo -n dnf module enable -y python312 >/dev/null 2>&1 || true
+            sudo -n dnf install -y python3.12 >/dev/null 2>&1 || true
           elif command -v yum >/dev/null 2>&1; then
-            sudo -n yum install -y python3.12 >/dev/null 2>&1 || true
+            sudo -n yum install -y python3 python3-pip >/dev/null 2>&1 || true
           elif command -v apt-get >/dev/null 2>&1; then
             sudo -n apt-get update -qq >/dev/null 2>&1 || true
-            sudo -n apt-get install -y python3.12 python3.12-venv >/dev/null 2>&1 || true
+            sudo -n apt-get install -y python3 python3-venv python3-pip >/dev/null 2>&1 || true
           fi
 
           if ver="$(detect)"; then echo "$ver"; exit 0; fi
@@ -141,10 +143,10 @@ jobs:
           fi
           REMOTE_PY="$(tail -n 1 /tmp/vps_probe.out | tr -d '[:space:]')"
           if [ -z "$REMOTE_PY" ] || [ "$REMOTE_PY" = "NONE" ]; then
-            echo "::error::No se encontró (ni se pudo instalar) Python 3.10-3.13 en el VPS."
+            echo "::error::No se encontró (ni se pudo instalar) Python 3.10 o superior con venv/ensurepip en el VPS."
             echo "Instálalo manualmente, por ejemplo:"
-            echo "  Oracle/RHEL:   sudo dnf install -y python3.12 python3.12-pip"
-            echo "  Debian/Ubuntu: sudo apt-get install -y python3.12 python3.12-venv"
+            echo "  Debian/Ubuntu: sudo apt-get install -y python3 python3-venv python3-pip"
+            echo "  Oracle/RHEL:   sudo dnf install -y python3 python3-pip"
             exit 1
           fi
           echo "Python detectado en el VPS: $REMOTE_PY"
@@ -154,9 +156,10 @@ jobs:
       # 2) Compilar en GitHub con la MISMA versión de Python del VPS
       # -----------------------------------------------------------------
       - name: Setup Python ${{ steps.probe.outputs.pyver }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ steps.probe.outputs.pyver }}
+          allow-prereleases: true
 
       - name: Compilar/validar código (compileall)
         run: python -m compileall -q src
